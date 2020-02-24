@@ -8,15 +8,14 @@ Create Model
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
 
 class SoAGREE(nn.Module):
-    def __init__(self, num_users, num_items, num_groups, num_follow, embedding_dim, group_member_dict, user_follow_dict, drop_ratio):
+    def __init__(self, num_users, num_items, num_groups, embedding_dim, group_member_dict, user_follow_dict, drop_ratio, device):
         super(SoAGREE, self).__init__()
         self.userembeds = UserEmbeddingLayer(num_users, embedding_dim)
         self.itemembeds = ItemEmbeddingLayer(num_items, embedding_dim)
         self.groupembeds = GroupEmbeddingLayer(num_groups, embedding_dim)
-        self.followembeds = FollowEmebddingLayer(num_follow, embedding_dim)
+        self.followembeds = FollowEmebddingLayer(num_users, embedding_dim)
 
         self.followAttention = AttentionLayer(2 * embedding_dim, drop_ratio)
         self.attention = AttentionLayer(2 * embedding_dim, drop_ratio)
@@ -26,9 +25,10 @@ class SoAGREE(nn.Module):
         self.user_follow_dict = user_follow_dict
         #　
         
-        self.num_follow = num_follow
         self.num_users = num_users
         self.num_groups = num_groups
+
+        self.device = device
 
         # initial model
         for m in self.modules():
@@ -36,6 +36,8 @@ class SoAGREE(nn.Module):
                 nn.init.normal_(m.weight)
             if isinstance(m, nn.Embedding):
                 nn.init.xavier_normal_(m.weight)
+
+        self.to(device)
 
     def forward(self, group_inputs, user_inputs, item_inputs):
         # train group
@@ -48,8 +50,9 @@ class SoAGREE(nn.Module):
 
     # group forward
     def grp_forward(self, group_inputss, item_inputss):
-        group_embeds = Variable(torch.Tensor())
-        item_embeds_full = self.itemembeds(Variable(item_inputss))
+        group_embeds = torch.tensor([],device=self.device)
+        item_embeds_full = self.itemembeds(item_inputss)
+        # group_inputs, item_inputs = group_inputss, item_inputss
         group_inputs, item_inputs = self.tensor2np(group_inputss), self.tensor2np(item_inputss)
         for i, j in zip(group_inputs, item_inputs):
             members = self.group_member_dict[i]
@@ -57,11 +60,11 @@ class SoAGREE(nn.Module):
             items_numb = []
             for _ in members:
                 items_numb.append(j)
-            item_embeds = self.itemembeds(Variable(torch.LongTensor(items_numb)))
+            item_embeds = self.itemembeds(torch.tensor(items_numb,device=self.device))
             group_item_embeds = torch.cat((members_embeds, item_embeds), dim=1)
             at_wt = self.attention(group_item_embeds)
             g_embeds_with_attention = torch.matmul(at_wt, members_embeds)
-            group_embeds_pure = self.groupembeds(Variable(torch.LongTensor([i])))
+            group_embeds_pure = self.groupembeds(torch.tensor([i],device=self.device))
             g_embeds = g_embeds_with_attention + group_embeds_pure
             if group_embeds.dim() == 0:
                 group_embeds = g_embeds
@@ -70,7 +73,7 @@ class SoAGREE(nn.Module):
 
         element_embeds = torch.mul(group_embeds, item_embeds_full)  # Element-wise product
         new_embeds = torch.cat((element_embeds, group_embeds, item_embeds_full), dim=1)
-        y = F.sigmoid(self.predictlayer(new_embeds))
+        y = torch.sigmoid(self.predictlayer(new_embeds))
         return y
 
     # user follow aggregate
@@ -78,14 +81,14 @@ class SoAGREE(nn.Module):
         user_finnal_list = []
         for i in user_inputs:
             follows = self.user_follow_dict[i]
-            follow_embeds = self.followembeds(Variable(torch.LongTensor(follows)))
+            follow_embeds = self.followembeds(torch.tensor(follows,device=self.device))
             users_numb = len(follows)
             # user embedding
-            user_embeds = self.userembeds(Variable(torch.LongTensor( [i]*users_numb )))
+            user_embeds = self.userembeds(torch.tensor( [i]*users_numb,device=self.device))
             user_follow_embeds = torch.cat((follow_embeds, user_embeds), dim=1)
             at_wt = self.followAttention(user_follow_embeds)
             u_embeds_with_attention = torch.matmul(at_wt, follow_embeds)
-            user_embeds_pure = self.userembeds(Variable(torch.LongTensor([i])))
+            user_embeds_pure = self.userembeds(torch.tensor([i],device=self.device))
             u_embeds = u_embeds_with_attention + user_embeds_pure
             user_finnal_list.append(u_embeds.view(-1))
         user_finnal_vec = torch.stack(user_finnal_list, dim=0)
@@ -93,16 +96,15 @@ class SoAGREE(nn.Module):
 
     # user forward
     def usr_forward(self, user_inputs, item_inputs):
-        item_inputs_var = Variable(item_inputs)
         user_embeds = self.user_aggregate(user_inputs.numpy())
-        item_embeds = self.itemembeds(item_inputs_var)
+        item_embeds = self.itemembeds(item_inputs)
         element_embeds = torch.mul(user_embeds, item_embeds)  # Element-wise product
         new_embeds = torch.cat((element_embeds, user_embeds, item_embeds), dim=1)
-        y = F.sigmoid(self.predictlayer(new_embeds))
+        y = torch.sigmoid(self.predictlayer(new_embeds))
         return y
 
     def tensor2np(self, tens):
-        return tens.numpy()
+        return tens.cpu().numpy()
 
 class UserEmbeddingLayer(nn.Module):
     def __init__(self, num_users, embedding_dim):

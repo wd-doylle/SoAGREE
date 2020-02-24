@@ -17,32 +17,6 @@ class Helper(object):
     def __init__(self):
         self.timber = True
 
-    def gen_group_member_dict(self, path):
-        g_m_d = {}
-        with open(path, 'r') as f:
-            line = f.readline().strip()
-            while line != None and line != "":
-                a = line.split(' ')
-                g = int(a[0])
-                g_m_d[g] = []
-                for m in a[1].split(','):
-                    g_m_d[g].append(int(m))
-                line = f.readline().strip()
-        return g_m_d
-
-    def gen_user_follow_dict(self, path):
-        g_m_d = {}
-        with open(path, 'r') as f:
-            line = f.readline().strip()
-            while line != None and line != "":
-                a = line.split(':')
-                g = int(a[0])
-                g_m_d[g] = []
-                for m in a[1].split(' '):
-                    g_m_d[g].append(int(m))
-                line = f.readline().strip()
-        return g_m_d
-
     def evaluate_model(self, model, testRatings, testNegatives, K, type_m):
         """
         Evaluate the performance (Hit_Ratio, NDCG) of top-K recommendation

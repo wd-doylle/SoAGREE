@@ -8,14 +8,11 @@ Main function
 from model.soagree import SoAGREE
 import torch
 import torch.nn as nn
-import torch.autograd as autograd
-from torch.autograd import Variable
 import torch.optim as optim
-import torch.nn.functional as F
 import numpy as np
 from time import time
 from config import Config
-from utils.util import Helper
+# from utils.util import Helper
 from dataset import GDataset
 
 
@@ -57,10 +54,32 @@ def training(model, train_loader, epoch_id, config, type_m):
         # Backward
         loss.backward()
         optimizer.step()
+        losses.append(loss)
 
-    # print('Iteration %d, loss is [%.4f ]' % (epoch_id, torch.mean(torch.Tensor(losses))))
-    print('Iteration %d, Done!' % (epoch_id))
+    print('Iteration %d, %s loss is [%.4f ]' % (epoch_id, type_m, torch.mean(torch.tensor(losses))))
 
+
+def validate(model, val_loader, epoch_id, type_m):
+    model.eval()
+    losses = []
+    for batch_id, (u, pi_ni) in enumerate(val_loader):
+        # Data Load
+        user_input = u
+        pos_item_input = pi_ni[:, 0]
+        neg_item_input = pi_ni[:, 1]
+        # Forward
+        if type_m == 'user':
+            pos_prediction = model(None, user_input, pos_item_input)
+            neg_prediction = model(None, user_input, neg_item_input)
+        elif type_m == 'group':
+            pos_prediction = model(user_input, None, pos_item_input)
+            neg_prediction = model(user_input, None, neg_item_input)
+        # Loss
+        loss = torch.mean((pos_prediction - neg_prediction -1) **2)
+        losses.append(loss)
+
+    print('Iteration %d, %s validation loss is [%.4f ]' % (epoch_id, type_m, torch.mean(torch.tensor(losses))))
+    model.train()
 
 
 def evaluation(model, helper, testRatings, testNegatives, K, type_m):
@@ -75,54 +94,59 @@ if __name__ == '__main__':
     config = Config()
 
     # initial helper
-    helper = Helper()
-
-    # get the dict of users in group
-    g_m_d = helper.gen_group_member_dict(config.user_in_group_path)
-
-    # get the dict of follow in user
-    u_f_d = helper.gen_user_follow_dict(config.follow_in_user_path)
+    # helper = Helper()
 
     # initial dataSet class
-    dataset = GDataset(config.user_dataset, config.group_dataset, config.num_negatives)
+    print("Loading dataset...")
+    td = time()
+    dataset = GDataset(config, config.num_negatives)
+    print("Loading time is: [%.1f s]" % (time()-td))
+
+    # get the dict of users in group
+    g_m_d = dataset.team_member_dict
+
+    # get the dict of follow in user
+    u_f_d = dataset.user_social_dict
 
     # get group number
-    num_group = len(g_m_d)
-    num_users, num_items = dataset.num_users, dataset.num_items
+    num_group, num_users, num_items = dataset.num_teams, dataset.num_users, dataset.num_repos
 
     # build AGREE model
-    soagree = SoAGREE(num_users, num_items, num_group, config.num_follow, config.embedding_size, g_m_d, u_f_d, config.drop_ratio)
+    soagree = SoAGREE(num_users, num_items, num_group, config.embedding_size, g_m_d, u_f_d, config.drop_ratio,config.device)
 
     # config information
     print("SoAGREE at embedding size %d, run Iteration:%d, NDCG and HR at %d" %(config.embedding_size, config.epoch, config.topK))
     # train the model
     for epoch in range(config.epoch):
         soagree.train()
-        # 开始训练时间
-        t1 = time()
+        # training start time
+        tt = time()
 
         for _ in range(config.balance):
-            training(soagree, dataset.get_group_dataloader(config.batch_size), epoch, config, 'group')
+            training(soagree, dataset.group_dataloader_train, epoch, config, 'group')
 
-        training(soagree, dataset.get_user_dataloader(config.batch_size), epoch, config, 'user')
+        training(soagree, dataset.user_dataloader_train, epoch, config, 'user')
 
-        print("user and group training time is: [%.1f s]" % (time()-t1))
-        # evaluation
-        t2 = time()
-        u_hr, u_ndcg = evaluation(soagree, helper, dataset.user_testRatings, dataset.user_testNegatives, config.topK, 'user')
-        print('User Iteration %d [%.1f s]: HR = %.4f, NDCG = %.4f, [%.1f s]' % (
-            epoch, time() - t1, u_hr, u_ndcg, time() - t2))
+        print("user and group training time is: [%.1f s]" % (time()-tt))
+        # validation
+        tv = time()
+        
+        validate(soagree,dataset.user_dataloader_val, epoch, 'user')
 
-        hr, ndcg = evaluation(soagree, helper, dataset.group_testRatings, dataset.group_testNegatives, config.topK, 'group')
-        print(
-            'Group Iteration %d [%.1f s]: HR = %.4f, '
-            'NDCG = %.4f, [%.1f s]' % (epoch, time() - t1, hr, ndcg, time() - t2))
+        validate(soagree,dataset.group_dataloader_val, epoch, 'group')
 
-        # with open("./result.txt", "w") as fw:
-        #     fw.write("user: " + u_hr + "\t" + u_ndcg + "\t group:" + hr + "\t" + ndcg + "\t" +"\n")
+        print("Validation time is: [%.1f s]" % (time()-tv))
 
-    print("Done!")
+        #evaluation
 
+        # u_hr, u_ndcg = evaluation(soagree, helper, dataset.user_testRatings, dataset.user_testNegatives, config.topK, 'user')
+        # print('User Iteration %d [%.1f s]: HR = %.4f, NDCG = %.4f, [%.1f s]' % (
+            # epoch, time() - t1, u_hr, u_ndcg, time() - t2))
+
+        # hr, ndcg = evaluation(soagree, helper, dataset.group_testRatings, dataset.group_testNegatives, config.topK, 'group')
+        # print(
+            # 'Group Iteration %d [%.1f s]: HR = %.4f, '
+            # 'NDCG = %.4f, [%.1f s]' % (epoch, time() - t1, hr, ndcg, time() - t2))
 
 
 
